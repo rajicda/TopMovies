@@ -1,3 +1,4 @@
+from datetime import datetime
 from flask import Flask, render_template, redirect, url_for, request
 from flask_bootstrap import Bootstrap5
 from flask_sqlalchemy import SQLAlchemy
@@ -12,6 +13,13 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'Anything'
 Bootstrap5(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///movies-collection.db"
+
+MOVIES = "https://api.themoviedb.org/3/search/movie"
+MOVIES_BY_ID = "https://api.themoviedb.org/3/movie"
+API_TOKEN = "<TOKEN>"
+headers = {
+    "Authorization": API_TOKEN
+}
 
 
 class Base(DeclarativeBase):
@@ -31,9 +39,9 @@ class Movie(db.Model):
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     description: Mapped[str] = mapped_column(String(250), unique=True, nullable=False)
     rating: Mapped[float] = mapped_column(Float, nullable=False)
-    ranking: Mapped[int] = mapped_column(Integer, nullable=False)
-    review: Mapped[str] = mapped_column(String(250), unique=True, nullable=False)
-    img_url: Mapped[str] = mapped_column(String(250), unique=True, nullable=False)
+    ranking: Mapped[int] = mapped_column(Integer, nullable=True)
+    review: Mapped[str] = mapped_column(String(250), nullable=True)
+    img_url: Mapped[str] = mapped_column(String(250), nullable=False)
 
     # Optional: this will allow each book object to be identified by its title when printed.
     # def __repr__(self):
@@ -56,6 +64,14 @@ class AddMovieForm(FlaskForm):
     submit = SubmitField('Add Movie!')
 
 
+def get_movies_by_title(query: dict) -> dict:
+    return requests.get(url=MOVIES, params=query, headers=headers).json()
+
+
+def get_movies_by_id(id: str) -> dict:
+    return requests.get(url=MOVIES_BY_ID + "/" + id, headers=headers).json()
+
+
 @app.route("/")
 def home():
     # READ RECORD
@@ -73,9 +89,12 @@ def home():
     #     db.session.add(second_movie)
     #     db.session.commit()
     with app.app_context():
-        result = db.session.execute(db.select(Movie).order_by(Movie.id.desc()))
+        result = db.session.execute(db.select(Movie).order_by(Movie.rating.asc()))
         all_movies = result.scalars().fetchall()
-    return render_template("index.html", all_movies=all_movies)
+        for i in range(len(all_movies)):
+            all_movies[i].ranking = len(all_movies) - i
+            db.session.commit()
+        return render_template("index.html", all_movies=all_movies)
 
 
 @app.route("/edit/<int:id>", methods=["GET", "POST"])
@@ -103,7 +122,32 @@ def edit_movie(id):
 def add_movie():
     # ADD MOVIE
     add_form = AddMovieForm()
+    if request.method == 'POST':
+        if add_form.validate_on_submit():
+            query = {
+                "query": add_form.title.data
+            }
+            found_movies = get_movies_by_title(query)
+            return render_template('select.html', add_form=add_form, movies=found_movies)
     return render_template('add.html', add_form=add_form)
+
+
+@app.route("/select/<int:id>", methods=["GET", "POST"])
+def select_movie(id):
+    # SELECT AND ADD MOVIE
+    movie_details = get_movies_by_id(str(id))
+    with app.app_context():
+        year = datetime.strptime(movie_details.get('release_date'), "%Y-%m-%d").strftime("%Y")
+        new_movie = Movie(
+                title=movie_details.get('title'),
+                year=year,
+                description=movie_details.get('overview'),
+                rating=round(movie_details.get('vote_average'), 1),
+                img_url=f"https://image.tmdb.org/t/p/w500/{movie_details.get('backdrop_path')}"
+            )
+        db.session.add(new_movie)
+        db.session.commit()
+        return redirect(url_for('edit_movie', id=new_movie.id))
 
 
 @app.route("/delete/<int:id>", methods=["GET"])
@@ -114,6 +158,7 @@ def delete_movie(id):
         db.session.delete(movie_to_delete)
         db.session.commit()
     return redirect(url_for('home'))
+
 
 if __name__ == '__main__':
     app.run(debug=True)
